@@ -1,0 +1,103 @@
+{
+  "manifestVersion": 2,
+  "id": "folder-sessionizer",
+  "name": "Folder Sessionizer",
+  "version": "0.1.0",
+  "description": "Fuzzy-pick a project folder in a native floating picker and open it in Orca as a terminal, a Claude or Codex agent, or a new worktree.",
+  "author": {
+    "name": "Bala Kumar",
+    "url": "https://github.com/balakumardev"
+  },
+  "repository": "https://github.com/balakumardev/orca-folder-sessionizer",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "terminal:send"
+    },
+    {
+      "kind": "agent:launch"
+    },
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "storage:own"
+    }
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "folder-sessionizer.open",
+        "title": "Folder Sessionizer: Open Project Folder…",
+        "when": "global"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "folder-sessionizer.open",
+        "key": "Ctrl+Shift+F",
+        "when": "global"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "open",
+        "icon": "folder",
+        "text": "Projects",
+        "tooltip": "Fuzzy-open project folder (Ctrl+Shift+F)",
+        "command": "folder-sessionizer.open"
+      }
+    ],
+    "settings": [
+      {
+        "key": "searchRoots",
+        "title": "Search roots",
+        "description": "Comma-separated folders to scan for projects. ~ is expanded.",
+        "type": "string",
+        "default": "~/workspace, ~/personal"
+      },
+      {
+        "key": "maxDepth",
+        "title": "Max depth",
+        "description": "How many folder levels below each root to list.",
+        "type": "integer",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 6
+      },
+      {
+        "key": "defaultEnterAction",
+        "title": "Enter key action",
+        "description": "What Enter does in the picker. The other actions keep their own keys.",
+        "type": "string",
+        "default": "terminal",
+        "enum": [
+          "terminal",
+          "claude",
+          "codex",
+          "open",
+          "worktree"
+        ],
+        "enumLabels": [
+          "New terminal tab",
+          "Claude agent",
+          "Codex agent",
+          "Switch to workspace only",
+          "New Git worktree"
+        ]
+      }
+    ]
+  }
+}
