@@ -68,6 +68,7 @@ function rig(opts: {
     runFd: async () => [],
     subdirs: async () => [],
     pickerPath: async () => '/fake/orca-folder-picker',
+    buildPicker: async () => '/fake/orca-folder-picker',
     selfTestPicker: async () => ({ ok: true, output: '' }),
     runPicker: async () => {
       throw new Error('runPicker must not run in this test')
@@ -239,7 +240,7 @@ test('a second trigger while the picker is open focuses it instead of spawning a
   let seenRequest: PickerRequest | null = null
   main.setDeps({
     subdirs: async (d) => (d === '/p' ? ['a', 'b'] : []),
-    runPicker: (request, onStart) => {
+    runPicker: (_bin, request, onStart) => {
       spawned++
       seenRequest = request
       const handle: PickerHandle = { focus: () => focused++, kill: () => killed++ }
@@ -293,6 +294,130 @@ test('errors are logged, never thrown into Orca', async () => {
   const w = await start(r)
   assert.equal(await w.command('folder-sessionizer.open'), undefined)
   await waitFor(() => w.logs.some((l) => l.includes('picker exploded')), 'error log')
+})
+
+// ---------------------------------------------------------------------------------------------
+// The picker is compiled on the user's machine
+
+test('a first run builds the picker at startup and says so in the log', async () => {
+  let built = 0
+  const r = rig({
+    deps: {
+      pickerPath: async () => null,
+      buildPicker: async () => {
+        built++
+        return '/cache/k/orca-folder-picker'
+      }
+    }
+  })
+  const w = await start(r)
+  await waitFor(() => w.logs.some((l) => l.includes('picker built in')), 'build log')
+  assert.equal(built, 1)
+  assert.ok(w.logs.some((l) => l.startsWith('ready:') && l.includes('picker=not built yet')))
+  assert.ok(w.logs.some((l) => l.includes('building the picker from swift/Picker.swift')))
+  assert.ok(w.logs.some((l) => l.includes('/cache/k/orca-folder-picker')))
+})
+
+test('an already built picker is not announced or rebuilt noisily', async () => {
+  const r = rig({})
+  const w = await start(r)
+  await waitFor(() => w.logs.some((l) => l.startsWith('ready:')), 'startup log')
+  await new Promise((res) => setTimeout(res, 20))
+  assert.ok(!w.logs.some((l) => l.includes('building the picker')))
+  assert.ok(!w.logs.some((l) => l.includes('picker unavailable')))
+})
+
+test('the picker is started from the path the build returned', async () => {
+  const r = rig({ settings: { searchRoots: '/p' }, deps: { subdirs: async () => ['a'], buildPicker: async () => '/cache/k/orca-folder-picker' } })
+  let usedBin = ''
+  main.setDeps({
+    runPicker: async (bin) => {
+      usedBin = bin
+      return null
+    }
+  })
+  const w = await start(r)
+  await w.command('folder-sessionizer.open')
+  await waitFor(() => usedBin !== '', 'picker start')
+  assert.equal(usedBin, '/cache/k/orca-folder-picker')
+})
+
+test('a failed build is logged, shown on the next press, and retried', async () => {
+  let attempts = 0
+  let started = 0
+  const r = rig({
+    settings: { searchRoots: '/p' },
+    deps: {
+      subdirs: async () => ['a'],
+      pickerPath: async () => null,
+      buildPicker: async () => {
+        attempts++
+        if (attempts < 3) throw new Error('needs the Command Line Tools: run `xcode-select --install`')
+        return '/cache/k/orca-folder-picker'
+      },
+      runPicker: async () => {
+        started++
+        return null
+      }
+    }
+  })
+  const w = await start(r)
+  await waitFor(() => w.logs.some((l) => l.includes('picker unavailable: needs the Command Line Tools')), 'startup failure log')
+  assert.equal(attempts, 1)
+
+  // First press: the person is told why, and the press tries again (still failing).
+  const toast = await w.command('folder-sessionizer.open')
+  assert.equal(typeof toast, 'string')
+  assert.ok(String(toast).includes('xcode-select --install'))
+  await waitFor(() => attempts === 2, 'retry')
+  await waitFor(() => w.logs.some((l) => l.includes('folder-sessionizer error: needs the Command Line Tools')), 'error log')
+  assert.equal(started, 0, 'no picker may start without a build')
+
+  // Second press: told again, and this retry succeeds, so the picker opens.
+  assert.equal(typeof (await w.command('folder-sessionizer.open')), 'string')
+  await waitFor(() => started === 1, 'picker start after a good build')
+
+  // From then on the command is silent again.
+  assert.equal(await w.command('folder-sessionizer.open'), undefined)
+})
+
+test('singleFlight shares one run among concurrent callers and runs again after it settles', async () => {
+  let runs = 0
+  let release: (v: string) => void = () => {}
+  const once = main.singleFlight(() => {
+    runs++
+    return new Promise<string>((res) => (release = res))
+  })
+  const a = once()
+  const b = once()
+  assert.equal(runs, 1)
+  release('x')
+  assert.deepEqual(await Promise.all([a, b]), ['x', 'x'])
+  const c = once()
+  assert.equal(runs, 2)
+  release('y')
+  assert.equal(await c, 'y')
+})
+
+test('singleFlight lets a failed run be retried', async () => {
+  let runs = 0
+  const once = main.singleFlight(async () => {
+    runs++
+    if (runs === 1) throw new Error('first fails')
+    return 'ok'
+  })
+  await once().then(
+    () => assert.fail('should reject'),
+    (e: Error) => assert.equal(e.message, 'first fails')
+  )
+  assert.equal(await once(), 'ok')
+  assert.equal(runs, 2)
+})
+
+test('tail keeps the last lines and caps the length', () => {
+  assert.equal(main.tail('a\nb\nc\nd', 2), 'c\nd')
+  assert.equal(main.tail('  x  \n'), 'x')
+  assert.equal(main.tail('y'.repeat(900), 6, 100).length, 100)
 })
 
 // ---------------------------------------------------------------------------------------------

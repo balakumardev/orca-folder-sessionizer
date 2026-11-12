@@ -4,11 +4,10 @@
 // stdout : { "path": "/abs/path", "action": "terminal|claude|codex|worktree|open" }   (exit 0)
 // exit 1 : cancelled (Esc, focus lost, SIGTERM); exit 2: bad input / usage.
 //
-// Build (universal, as shipped in bin/):
-//   swiftc -O -swift-version 5 -target arm64-apple-macos13.0  swift/Picker.swift -o /tmp/picker-arm64
-//   swiftc -O -swift-version 5 -target x86_64-apple-macos13.0 swift/Picker.swift -o /tmp/picker-x86_64
-//   lipo -create /tmp/picker-arm64 /tmp/picker-x86_64 -output bin/orca-folder-picker
-//   codesign --force --sign - bin/orca-folder-picker
+// Build: the plugin worker compiles this file on first use, for the Mac it runs on:
+//   xcrun swiftc -O -swift-version 5 swift/Picker.swift -o orca-folder-picker
+// and keeps the result in ~/Library/Caches/orca-folder-sessionizer/<hash of this file>/.
+// Check it by hand with: orca-folder-picker --selftest
 
 import AppKit
 import Foundation

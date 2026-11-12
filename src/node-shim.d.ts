@@ -43,6 +43,12 @@ declare module 'node:child_process' {
   ): ChildProcess
 }
 
+declare module 'node:crypto' {
+  export function createHash(algorithm: string): {
+    update(data: string): { digest(encoding: 'hex'): string }
+  }
+}
+
 declare module 'node:fs' {
   export interface Dirent {
     readonly name: string
@@ -51,10 +57,13 @@ declare module 'node:fs' {
   export const constants: { readonly X_OK: number }
   export const promises: {
     readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>
+    readFile(path: string, encoding: 'utf8'): Promise<string>
+    mkdir(path: string, options: { recursive: true }): Promise<unknown>
+    rename(from: string, to: string): Promise<void>
+    rm(path: string, options: { force: true }): Promise<void>
     realpath(path: string): Promise<string>
     stat(path: string): Promise<{ isDirectory(): boolean }>
     access(path: string, mode?: number): Promise<void>
-    chmod(path: string, mode: number): Promise<void>
   }
 }
 
@@ -74,4 +83,3 @@ declare module 'node:path' {
 declare module 'node:url' {
   export function fileURLToPath(url: string): string
 }
-

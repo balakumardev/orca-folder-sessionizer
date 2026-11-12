@@ -5,12 +5,12 @@ Press `Ctrl+Shift+F` in Orca, type a few letters of a project name, press Enter.
 ## Install
 
 ```
-orca plugin install balakumardev/orca-folder-sessionizer@v0.1.0
+orca plugin install balakumardev/orca-folder-sessionizer@v0.1.1
 ```
 
 The plugin runs code, so Orca stops with exit code 3 and prints what it would be granted plus an `--approve` command. Read the list, then run that command.
 
-Needs Orca 1.4.248 or newer on macOS 13 or newer. Tested on Orca 1.4.257 on Apple Silicon; the Intel half of the picker is built but not run by the author. [`fd`](https://github.com/sharkdp/fd) is optional: without it the plugin scans with `readdir`, which is slower.
+Needs Orca 1.4.248 or newer on macOS 13 or newer, and Xcode or its Command Line Tools (`xcode-select --install`). The plugin compiles its picker on your Mac the first time it starts, which takes a few seconds. Tested on Orca 1.4.257 on Apple Silicon. [`fd`](https://github.com/sharkdp/fd) is optional: without it the plugin scans with `readdir`, which is slower.
 
 ## Keys
 
@@ -41,20 +41,18 @@ Open workspaces and recently used folders come first when the search box is empt
 
 ## What it is allowed to do
 
-It is a `trusted-worker`: a Node process with your user's access to the machine. It also ships a compiled picker, `bin/orca-folder-picker`. The source is `swift/Picker.swift`, so you can rebuild it and compare:
+It is a `trusted-worker`: a Node process with your user's access to the machine. The repository holds no executable. The picker is plain Swift in `swift/Picker.swift`. On first start the worker runs `xcrun swiftc` on it, checks the result with `--selftest`, and keeps it in `~/Library/Caches/orca-folder-sessionizer/<hash of the source>/`. Changing the source builds a new copy. To build it yourself:
 
 ```
-swiftc -O -swift-version 5 -target arm64-apple-macos13.0  swift/Picker.swift -o /tmp/picker-arm64
-swiftc -O -swift-version 5 -target x86_64-apple-macos13.0 swift/Picker.swift -o /tmp/picker-x86_64
-lipo -create /tmp/picker-arm64 /tmp/picker-x86_64 -output bin/orca-folder-picker
-codesign --force --sign - bin/orca-folder-picker
+xcrun swiftc -O -swift-version 5 swift/Picker.swift -o /tmp/orca-folder-picker
+/tmp/orca-folder-picker --selftest
 ```
 
 Capabilities: `workspace:read` (list existing workspaces), `workspace:write` (switch workspace), `settings:own`, `storage:own` (recent folders), `terminal:send` and `agent:launch`. The last two are declared, but the worker currently opens terminals and agents through the `orca` CLI rather than these host calls.
 
 ## Troubleshooting
 
-`orca plugin logs balakumardev.folder-sessionizer` shows what the worker did. A `picker: N folders` line means the shortcut fired and the picker was started. The picker is macOS only, so on another system the command logs an error.
+`orca plugin logs balakumardev.folder-sessionizer` shows what the worker did. A `picker: N folders` line means the shortcut fired and the picker was started. The first start logs `building the picker` and then `picker built`; if the build fails the log says why and the next press shows the reason in Orca. The picker is macOS only, so on another system the command logs an error.
 
 ## Development
 
@@ -63,7 +61,7 @@ orca plugin types .      # writes .orca/types, needed by tsc
 tsc --noEmit -p .
 orca plugin validate .
 orca plugin test .
-bin/orca-folder-picker --selftest
+xcrun swiftc -O -swift-version 5 swift/Picker.swift -o /tmp/orca-folder-picker && /tmp/orca-folder-picker --selftest
 ```
 
 Remove `.orca/` before installing or updating from a local folder. On Orca 1.4.257 its presence made the integrity check fail for a dev-loaded plugin.

@@ -1,13 +1,17 @@
 // Folder Sessionizer: Orca plugin worker.
 //
 // Ctrl+Shift+F (or the "Projects" status bar item) scans the configured roots, shows the native
-// picker (bin/orca-folder-picker) and opens the chosen folder in Orca as a terminal tab, a
-// Claude/Codex agent, a plain workspace switch, or a new Git worktree.
+// picker and opens the chosen folder in Orca as a terminal tab, a Claude/Codex agent, a plain
+// workspace switch, or a new Git worktree.
+//
+// The picker is compiled from swift/Picker.swift on first use and cached under
+// ~/Library/Caches/orca-folder-sessionizer, so the repository ships no executable.
 //
 // Everything that touches the OS goes through `deps`, so tests inject fakes and `activate` itself
 // never scans or spawns anything.
 
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { constants as fsConstants, promises as fsp } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -63,8 +67,12 @@ export interface Deps {
   subdirs(dir: string): Promise<string[]>
   realpath(p: string): Promise<string | null>
   isDir(p: string): Promise<boolean>
+  /** The compiled picker if it is already built; never builds. */
   pickerPath(): Promise<string | null>
+  /** Compiles the picker if it is not cached yet and returns its path. Rejects with a plain reason. */
+  buildPicker(): Promise<string>
   runPicker(
+    bin: string,
     request: PickerRequest,
     onStart: (handle: PickerHandle) => void
   ): Promise<PickerPick | null>
@@ -289,33 +297,84 @@ function run(
   })
 }
 
-/** The picker ships inside the plugin, next to src/. */
-function pickerCandidates(): string[] {
-  try {
-    return [resolve(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'orca-folder-picker')]
-  } catch {
-    return []
+/** Runs `fn` one at a time: callers that arrive while it runs share its result, later ones run it again. */
+export function singleFlight<T>(fn: () => Promise<T>): () => Promise<T> {
+  let running: Promise<T> | null = null
+  return () => {
+    if (!running) {
+      const p = fn()
+      running = p
+      const clear = () => {
+        if (running === p) running = null
+      }
+      p.then(clear, clear)
+    }
+    return running
   }
+}
+
+/** The last few lines of command output, short enough for a log line. */
+export function tail(text: string, lines = 6, max = 500): string {
+  const out = text.trim().split('\n').slice(-lines).join('\n')
+  return out.length > max ? out.slice(-max) : out
+}
+
+/** The picker's Swift source, in the installed plugin next to src/. */
+function pickerSource(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), '..', 'swift', 'Picker.swift')
 }
 
 export function realDeps(): Deps {
   const home = homedir()
 
-  async function pickerPath(): Promise<string | null> {
-    for (const p of pickerCandidates()) {
-      if (await exists(p)) {
-        if (!(await exists(p, fsConstants.X_OK))) {
-          try {
-            await fsp.chmod(p, 0o755)
-          } catch {
-            // reported by the spawn error
-          }
-        }
-        return p
-      }
-    }
-    return null
+  /**
+   * Orca checks the plugin folder against a hash, so the compiled picker goes in the user's cache
+   * instead. The key is the source's hash: an update that changes Picker.swift rebuilds by itself.
+   */
+  async function cachedPicker(): Promise<string> {
+    const source = await fsp.readFile(pickerSource(), 'utf8')
+    const key = createHash('sha256').update(source).digest('hex').slice(0, 16)
+    return join(home, 'Library', 'Caches', 'orca-folder-sessionizer', key, 'orca-folder-picker')
   }
+
+  async function pickerPath(): Promise<string | null> {
+    try {
+      const bin = await cachedPicker()
+      return (await exists(bin, fsConstants.X_OK)) ? bin : null
+    } catch {
+      return null
+    }
+  }
+
+  async function compilePicker(): Promise<string> {
+    let bin: string
+    try {
+      bin = await cachedPicker()
+    } catch (e) {
+      throw new Error(`cannot read swift/Picker.swift in the plugin folder: ${errMsg(e)}`)
+    }
+    if (await exists(bin, fsConstants.X_OK)) return bin
+    // With no developer tools, `xcrun` would open macOS's install dialog. Say what is missing instead.
+    if ((await run('/usr/bin/xcode-select', ['-p'], { timeout: 10_000 })).code !== 0) {
+      throw new Error('the picker is built on first use and needs Xcode or its Command Line Tools: run `xcode-select --install` in a terminal')
+    }
+    await fsp.mkdir(dirname(bin), { recursive: true })
+    // Build beside the target, then rename, so a half-written file is never run.
+    const tmp = `${bin}.building-${Date.now()}`
+    try {
+      const build = await run('/usr/bin/xcrun', ['swiftc', '-O', '-swift-version', '5', pickerSource(), '-o', tmp], { timeout: 5 * 60_000 })
+      if (build.code !== 0) throw new Error(`swiftc exited ${build.code}: ${tail(build.stderr)}`)
+      const check = await run(tmp, ['--selftest'], { timeout: 15_000 })
+      if (check.code !== 0) throw new Error(`the built picker failed its self-test: ${tail(check.stdout + check.stderr)}`)
+      await fsp.rename(tmp, bin)
+      return bin
+    } finally {
+      await fsp.rm(tmp, { force: true })
+    }
+  }
+
+  // One build at a time: a second press while the first is compiling waits for it.
+  const buildPicker = singleFlight(compilePicker)
 
   return {
     async cli(args) {
@@ -381,10 +440,9 @@ export function realDeps(): Deps {
     },
 
     pickerPath,
+    buildPicker,
 
-    async runPicker(request, onStart) {
-      const bin = await pickerPath()
-      if (!bin) throw new Error('bin/orca-folder-picker not found (build it with swiftc, see swift/Picker.swift)')
+    async runPicker(bin, request, onStart) {
       return new Promise<PickerPick | null>((res, rej) => {
         const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'], env: scrubbedEnv() })
         let out = ''
@@ -412,10 +470,13 @@ export function realDeps(): Deps {
     },
 
     async selfTestPicker() {
-      const bin = await pickerPath()
-      if (!bin) return { ok: false, output: 'picker binary not found' }
-      const r = await run(bin, ['--selftest'], { timeout: 15_000 })
-      return { ok: r.code === 0, output: (r.stdout + r.stderr).trim().slice(0, 300) }
+      try {
+        const bin = await buildPicker()
+        const r = await run(bin, ['--selftest'], { timeout: 15_000 })
+        return { ok: r.code === 0, output: (r.stdout + r.stderr).trim().slice(0, 300) }
+      } catch (e) {
+        return { ok: false, output: errMsg(e) }
+      }
     },
 
     now: () => new Date(),
@@ -466,6 +527,37 @@ function createController(orca: OrcaWorkerApi) {
   const log = (m: string) => orca.log(m)
   let phase: 'idle' | 'scanning' | 'open' = 'idle'
   let picker: PickerHandle | null = null
+  /** Why the last attempt to build the picker failed; cleared by the next success. */
+  let pickerProblem: string | null = null
+
+  async function ensurePicker(): Promise<string> {
+    try {
+      const bin = await deps.buildPicker()
+      pickerProblem = null
+      return bin
+    } catch (e) {
+      pickerProblem = errMsg(e)
+      throw e
+    }
+  }
+
+  /** Builds the picker at startup, so the first press finds it ready. Never throws. */
+  async function warmPicker(): Promise<void> {
+    try {
+      const had = await deps.pickerPath()
+      if (!had) log('building the picker from swift/Picker.swift (first run, a few seconds)')
+      const t0 = deps.now().getTime()
+      const bin = await ensurePicker()
+      if (!had) log(`picker built in ${((deps.now().getTime() - t0) / 1000).toFixed(1)}s: ${bin}`)
+    } catch (e) {
+      log(`picker unavailable: ${errMsg(e)}`)
+    }
+  }
+
+  /** Shown as a toast when the command is pressed after a failed build; the press retries the build. */
+  function pickerNote(): string | undefined {
+    return pickerProblem ? `Folder Sessionizer could not build its picker: ${pickerProblem}. Trying again now.` : undefined
+  }
 
   async function readConfig(): Promise<Config> {
     let s: Record<string, unknown> = {}
@@ -708,11 +800,13 @@ function createController(orca: OrcaWorkerApi) {
     if (phase !== 'idle') return
     phase = 'scanning'
     try {
+      // First, so a missing toolchain fails before any scanning and a first-run build is waited for.
+      const bin = await ensurePicker()
       const cfg = await readConfig()
       const { request, total } = await buildRequest(cfg)
       log(`picker: ${total} folders from ${cfg.roots.join(', ')} (depth ${cfg.maxDepth})`)
       phase = 'open'
-      const pick = await deps.runPicker(request, (h) => {
+      const pick = await deps.runPicker(bin, request, (h) => {
         picker = h
       })
       picker = null
@@ -741,7 +835,7 @@ function createController(orca: OrcaWorkerApi) {
     }
   }
 
-  return { trigger, stop, performSelection, buildRequest, readConfig, workspaceSample }
+  return { trigger, stop, performSelection, buildRequest, readConfig, workspaceSample, warmPicker, pickerNote }
 }
 
 type Controller = ReturnType<typeof createController>
@@ -754,10 +848,12 @@ export default function activate(orca: OrcaWorkerApi): void {
   const c = createController(orca)
   current = c
 
-  // Return nothing: a returned value becomes a toast, and waiting for the person would time out.
+  // Return at once: a returned string becomes a toast, and waiting for the person would time out.
+  // The only thing worth a toast is a picker that could not be built, since nothing else would show.
   orca.commands.register('folder-sessionizer.open', () => {
+    const note = c.pickerNote()
     void c.trigger()
-    return undefined
+    return note
   })
 
   // Same selection logic without the picker, so the plugin can be verified end to end
@@ -786,7 +882,9 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   orca.panels.handle('selfcheck', async () => {
-    const [picker, fd, st] = await Promise.all([deps.pickerPath(), deps.findFd(), deps.selfTestPicker()])
+    // The self-test builds the picker if needed, so read its path afterwards.
+    const st = await deps.selfTestPicker()
+    const [picker, fd] = await Promise.all([deps.pickerPath(), deps.findFd()])
     return { picker, fd, pickerSelfTest: st.ok ? 'ok' : st.output, orcaEnvKeys: Object.keys(process.env).filter((k) => k.startsWith('ORCA')) }
   })
 
@@ -795,10 +893,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     try {
       const [picker, fd] = await Promise.all([deps.pickerPath(), deps.findFd()])
       const envKeys = Object.keys(process.env).filter((k) => k.startsWith('ORCA'))
-      orca.log(`ready: picker=${picker ?? 'MISSING'} fd=${fd ?? 'none (readdir fallback)'} orcaEnv=[${envKeys.join(',')}]`)
+      orca.log(`ready: picker=${picker ?? 'not built yet'} fd=${fd ?? 'none (readdir fallback)'} orcaEnv=[${envKeys.join(',')}]`)
     } catch (e) {
       orca.log(`startup check failed: ${errMsg(e)}`)
     }
+    await c.warmPicker()
   })()
 }
 
