@@ -59,8 +59,10 @@ declare module 'node:fs' {
     readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>
     readFile(path: string, encoding: 'utf8'): Promise<string>
     mkdir(path: string, options: { recursive: true }): Promise<unknown>
+    mkdtemp(prefix: string): Promise<string>
+    copyFile(from: string, to: string): Promise<void>
     rename(from: string, to: string): Promise<void>
-    rm(path: string, options: { force: true }): Promise<void>
+    rm(path: string, options: { force: true; recursive?: true }): Promise<void>
     realpath(path: string): Promise<string>
     stat(path: string): Promise<{ isDirectory(): boolean }>
     access(path: string, mode?: number): Promise<void>
@@ -69,6 +71,7 @@ declare module 'node:fs' {
 
 declare module 'node:os' {
   export function homedir(): string
+  export function tmpdir(): string
 }
 
 declare module 'node:path' {

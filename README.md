@@ -21,8 +21,9 @@ Needs Orca 1.4.248 or newer on macOS 13 or newer, and Xcode or its Command Line 
 | `Ctrl+X` | Codex agent |
 | `Ctrl+W`, `Shift+Enter` | new Git worktree with a Claude agent |
 | `Opt+Enter`, `Ctrl+O` | switch to the workspace, open nothing new |
+| `Tab` | worktree chooser for the highlighted Git folder (esc goes back) |
 | Up, Down, `Ctrl+N`, `Ctrl+P`, `Ctrl+J`, `Ctrl+K` | move |
-| Esc | cancel |
+| Esc | cancel (in the worktree chooser: back to the folder list) |
 
 Open workspaces and recently used folders come first when the search box is empty. The shortcut can be rebound in Settings, Shortcuts.
 
@@ -32,12 +33,19 @@ Open workspaces and recently used folders come first when the search box is empt
 - **Max depth**: 1 to 6 levels below each root. Default 3.
 - **Enter key action**: terminal, claude, codex, open or worktree. Default terminal.
 
+## Theme
+
+The picker follows the app theme selected in Orca: dark, light or system, with the theme plugin if one is chosen. It reads that from Orca's settings each time it opens (only the three theme settings, through a read-only `sqlite3`, plus the theme's own files) and falls back to the default dark look when it cannot; a `theme not applied` line in the plugin log says why. It uses Geist if that is installed, else the system font. Text that would be hard to read on the theme's surface falls back to Orca's built-in colors for that mode.
+
 ## What it does with a folder
 
 - A Git repository root is added to Orca as a project, and its main checkout is shown, so the terminal or agent opens in that exact folder. No copy is made.
 - Any other folder (a subfolder, or a parent of several repos) is added as a folder workspace.
 - The worktree action creates a new isolated worktree and starts Claude in it. On a folder that is not a Git root it opens a terminal instead and logs why.
 - A folder Orca already shows is reused. Nothing is added twice.
+- `Tab` on a Git folder turns the same picker into a worktree chooser for that repo: a pinned "+ New worktree" row, the main checkout, then the repo's other worktrees with their branch names. The main checkout is highlighted, so `Tab` then `Enter` does what `Enter` does on the folder. Typing filters the worktrees by branch and folder name. The action keys work as in the folder list, on the highlighted worktree.
+- "+ New worktree" creates a worktree named from what you typed (`fix login` becomes `fix-login`), or `<folder>-<time>` when the box is empty. The action key picks what starts in it: Claude or Codex, a terminal, or just a switch to it. `Ctrl+W` and `Shift+Enter` always make a new worktree with Claude.
+- The chooser lists the worktrees Orca knows about: the main checkout and the ones created in Orca. It is not `git worktree list`, so worktrees made elsewhere, such as an agent's scratch worktrees under `.claude/worktrees`, are not shown.
 
 ## What it is allowed to do
 
@@ -62,6 +70,7 @@ tsc --noEmit -p .
 orca plugin validate .
 orca plugin test .
 xcrun swiftc -O -swift-version 5 swift/Picker.swift -o /tmp/orca-folder-picker && /tmp/orca-folder-picker --selftest
+/tmp/orca-folder-picker --snapshot out.png [chooser] < request.json   # renders the panel to a PNG, shows nothing
 ```
 
 Remove `.orca/` before installing or updating from a local folder. On Orca 1.4.257 its presence made the integrity check fail for a dev-loaded plugin.
