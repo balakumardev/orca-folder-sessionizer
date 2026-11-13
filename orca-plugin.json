@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "folder-sessionizer",
   "name": "Folder Sessionizer",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fuzzy-pick a project folder in a native floating picker and open it in Orca as a terminal, a Claude or Codex agent, or a new worktree.",
   "author": {
     "name": "Bala Kumar",

@@ -1,0 +1,113 @@
+name: Release
+
+# orca.dev publishes from `v*` git tags, not from commits on main. This workflow
+# turns a version bump in orca-plugin.json into that tag, so a push to main that
+# bumps "version" is all a release needs.
+#
+# It cannot run the plugin's own checks: `orca plugin validate|test|types` need the
+# Orca app and its CLI, which only exist on a Mac. Keep the four-step validate
+# ritual in .claude/skills/orca-folder-sessionizer-release/SKILL.md for before you push.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out, with every tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the manifest and decide
+        id: check
+        run: |
+          set -euo pipefail
+
+          version=$(jq -r '.version // empty' orca-plugin.json)
+          if [ -z "$version" ]; then
+            echo "::error file=orca-plugin.json::no \"version\" field"
+            exit 1
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error file=orca-plugin.json::version \"$version\" is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          # Which files this push touched. First push to a branch has no HEAD^.
+          if git rev-parse --verify --quiet 'HEAD^' >/dev/null; then
+            git diff --name-only HEAD^ HEAD > "$RUNNER_TEMP/changed.txt"
+          else
+            git ls-files > "$RUNNER_TEMP/changed.txt"
+          fi
+          plugin_code_changed=false
+          if grep -qE '^(src/|swift/|orca-plugin\.json)' "$RUNNER_TEMP/changed.txt"; then
+            plugin_code_changed=true
+          fi
+          echo "plugin_code_changed=$plugin_code_changed" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $tag already exists. Nothing to publish."
+            # The silent failure this workflow exists to catch: plugin code
+            # changed on main, but the version was not bumped, so the
+            # marketplace will keep serving the previous release.
+            if [ "$plugin_code_changed" = true ]; then
+              echo "::warning file=orca-plugin.json::Plugin code changed in this push, but version $version is already released. Bump \"version\" in orca-plugin.json and push again to reach the marketplace."
+            fi
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $tag does not exist yet. Publishing."
+          fi
+
+      - name: Tag and create the release
+        if: steps.check.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.check.outputs.tag }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -m "Folder Sessionizer $VERSION"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" \
+            --title "Folder Sessionizer $VERSION" \
+            --generate-notes \
+            --verify-tag \
+            --latest
+
+      - name: Summarize
+        if: always() && steps.check.outcome == 'success'
+        env:
+          RELEASED: ${{ steps.check.outputs.release }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          {
+            if [ "$RELEASED" = 'true' ]; then
+              echo "### Released \`$TAG\`"
+              echo
+              echo "The tag is pushed. orca.dev re-indexes tags about every 30 minutes:"
+              echo "https://orca.dev/plugins/balakumardev/orca-folder-sessionizer"
+            else
+              echo "### Nothing to release"
+              echo
+              echo "\`$TAG\` already exists, so the marketplace is already serving it."
+              echo "To publish new plugin code, bump \`version\` in \`orca-plugin.json\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
